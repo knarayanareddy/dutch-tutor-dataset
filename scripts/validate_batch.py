@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Local validation gate for Code Mode outputs.
+Deterministic validation gate for Dutch tutor JSONL batches (including ocr_explain mode).
 Usage:
-  python scripts/validate_batch.py seeds/batch_001.jsonl data/batch_001_part1.jsonl --start 1 --end 250
+  python scripts/validate_batch.py seeds/batch_001.jsonl data/batch_001.jsonl --start 1 --end 250
 """
 
 import argparse
@@ -80,6 +80,7 @@ def main() -> int:
             failed_ids.append(sid)
             continue
 
+        user_msg = msgs[1]["content"].strip()
         asst = msgs[2]["content"].strip()
         m = TAG_PATTERN.match(asst)
         if not m:
@@ -111,8 +112,22 @@ def main() -> int:
             errors.append(f"Row {idx} ({sid}): learner_error cannot have NONE correction")
             failed_ids.append(sid)
             continue
+        if mode == "ocr_explain":
+            if not user_msg.startswith("[OCR_TEXT]"):
+                errors.append(f"Row {idx} ({sid}): ocr_explain user message must start with '[OCR_TEXT]'")
+                failed_ids.append(sid)
+                continue
+            if correction.upper() == "NONE" or len(correction.split()) < 2:
+                errors.append(f"Row {idx} ({sid}): ocr_explain requires English translation in <correction>")
+                failed_ids.append(sid)
+                continue
 
-        dutch_blocks = [reply_nl] + ([] if correction.upper() == "NONE" else [correction])
+        # In ocr_explain mode, <correction> holds the English translation, so only check <reply_nl> as Dutch
+        if mode == "ocr_explain" or correction.upper() == "NONE":
+            dutch_blocks = [reply_nl]
+        else:
+            dutch_blocks = [reply_nl, correction]
+
         for text in dutch_blocks:
             tokens = [t.lower() for t in TOKEN_RE.findall(text)]
             if len(tokens) < 2:

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Run ONCE locally before pushing your repo to GitHub:
-  python scripts/prepare_repo.py --batches 25 --batch-size 100
+  python scripts/prepare_repo.py --batches 10 --batch-size 250
 """
 
 import argparse
@@ -28,17 +28,27 @@ REGISTERS = [
     "polite_formal (use u, clear polite phrasing for gemeente, huisarts, or work emails)",
 ]
 
-SCENARIOS = [
+CHAT_SCENARIOS = [
     "NS train delay, platform change, or OV-chipkaart issue at a Dutch station",
     "Buying, negotiating, or picking up a secondhand item via Marktplaats",
     "Ordering coffee, broodjes, or borrel snacks at a café",
-    "Making an appointment or describing symptoms at the huisarts",
+    "Making an appointment or explaining symptoms at the huisarts",
     "Daily standup or quick Slack/coffee chat with Dutch coworkers",
     "Dealing with gemeente registration, DigiD, or housing/energy bills",
     "Small talk about Dutch weather, cycling in headwind, or weekend plans",
     "Supermarket checkout (Albert Heijn / Jumbo) and Bonuskaart questions",
     "Rescheduling plans with a Dutch friend over WhatsApp",
     "Asking for directions or bicycle repair help at a fietsenmaker",
+]
+
+OCR_SCENARIOS = [
+    "Dutch street or bicycle parking prohibition sign (e.g., Geen fietsen plaatsen)",
+    "NS station platform display or rail disruption notice (werkzaamheden / omleiding)",
+    "Official letter snippet from gemeente, Belastingdienst, or housing corporation",
+    "Albert Heijn / Jumbo supermarket shelf label, discount rule, or food packaging",
+    "Huisarts clinic door notice, pharmacy label, or prescription dosage instruction",
+    "Café menu board, terrace notice, or Dutch receipt line items",
+    "Apartment building hallway notice (afval, grofvuil, huisregels)",
 ]
 
 GRAMMAR_TRAPS = [
@@ -54,8 +64,25 @@ GRAMMAR_TRAPS = [
     "false friends from English (e.g., 'eventueel', 'actueel', 'brutaal', 'slim', 'winkel')",
 ]
 
-# 65% flawed learner Dutch, 20% valid Dutch (prevents over-correction), 15% how-to-say query
-INPUT_MODES = ["learner_error"] * 13 + ["valid_dutch"] * 4 + ["how_do_i_say"] * 3
+# 55% learner_error, 15% valid_dutch, 15% how_do_i_say, 15% ocr_explain
+INPUT_MODES = (
+    ["learner_error"] * 11
+    + ["valid_dutch"] * 3
+    + ["how_do_i_say"] * 3
+    + ["ocr_explain"] * 3
+)
+
+# High-frequency everyday Dutch nouns for realistic [DB_HINTS]
+EVERYDAY_NOUNS = [
+    "trein", "fiets", "station", "kaartje", "perron", "vertraging", "bus", "auto",
+    "huis", "kamer", "keuken", "raam", "deur", "sleutel", "tafel", "stoel", "bed",
+    "werk", "kantoor", "vergadering", "verslag", "afspraak", "collega", "baan",
+    "winkel", "bon", "tas", "brood", "koffie", "water", "bier", "rekening", "prijs",
+    "arts", "ziekenhuis", "recept", "pijn", "hoofd", "keel", "medicijn",
+    "weer", "regen", "wind", "zon", "paraplu", "jas", "schoen", "weekend", "vakantie",
+    "bericht", "telefoon", "oplader", "scherm", "batterij", "gemeente", "formulier",
+    "bord", "stoep", "gevel", "afval", "brief", "adres", "korting", "kassa", "balie",
+]
 
 
 def build_lexicon_db() -> None:
@@ -84,7 +111,7 @@ def build_lexicon_db() -> None:
         if w and re.match(r"^[a-zàáâäèéêëìíîïòóôöùúûüĳ'-]+$", w):
             words.add(w)
 
-    print("Streaming Dutch Wiktionary (Kaikki) for de/het genders & verbs...")
+    print("Streaming Dutch Wiktionary (Kaikki) for de/het genders & infinitive verbs...")
     noun_rows = {}
     verb_rows = {}
     req_kaikki = urllib.request.Request(
@@ -115,7 +142,7 @@ def build_lexicon_db() -> None:
             for sense in entry.get("senses", []):
                 tags.update(sense.get("tags", []))
 
-            # Skip inflected forms (participles, plurals, past tenses) when registering lemmas
+            # Skip inflected forms (participles, past tenses, plurals) for lemma tables
             if "form-of" in tags or "alt-of" in tags:
                 continue
 
@@ -159,7 +186,7 @@ def build_lexicon_db() -> None:
     conn.execute("VACUUM")
     conn.close()
     print(f"Built {DB_PATH} ({DB_PATH.stat().st_size / 1e6:.1f} MB): "
-          f"{len(words):,} words, {len(noun_rows):,} de/het nouns, {len(verb_rows):,} verbs.")
+          f"{len(words):,} words, {len(noun_rows):,} de/het nouns, {len(verb_rows):,} verb lemmas.")
 
 
 def generate_seed_batches(num_batches: int, batch_size: int) -> None:
@@ -169,29 +196,16 @@ def generate_seed_batches(num_batches: int, batch_size: int) -> None:
 
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    nouns = cur.execute(
-        "SELECT lemma, article FROM nouns WHERE article IN ('de', 'het')"
-    ).fetchall()
-    verbs = cur.execute(
-        "SELECT lemma, separable FROM verbs WHERE length(lemma) BETWEEN 5 AND 13"
-    ).fetchall()
+    noun_map = dict(
+        cur.execute("SELECT lemma, article FROM nouns WHERE article IN ('de', 'het')").fetchall()
+    )
+    verbs = cur.execute("SELECT lemma, separable FROM verbs").fetchall()
     conn.close()
 
-    # Curated high-frequency everyday Dutch nouns (verified against SQLite de/het)
-    EVERYDAY_NOUNS = [
-        "trein", "fiets", "station", "kaartje", "perron", "vertraging", "bus", "auto",
-        "huis", "kamer", "keuken", "raam", "deur", "sleutel", "tafel", "stoel", "bed",
-        "werk", "kantoor", "vergadering", "verslag", "afspraak", "collega", "baan",
-        "winkel", "bon", "tas", "brood", "koffie", "water", "bier", "rekening", "prijs",
-        "arts", "ziekenhuis", "recept", "pijn", "hoofd", "keel", "medicijn",
-        "weer", "regen", "wind", "zon", "paraplu", "jas", "schoen", "weekend", "vakantie",
-        "bericht", "telefoon", "oplader", "scherm", "batterij", "gemeente", "formulier",
-    ]
-    noun_map = dict(nouns)
     common_nouns = [(w, noun_map[w]) for w in EVERYDAY_NOUNS if w in noun_map]
     infinitive_verbs = [
         (v, sep) for v, sep in verbs
-        if v.endswith("en") and 5 <= len(v) <= 11
+        if v.endswith("en") and 5 <= len(v) <= 12 and "-" not in v
     ]
 
     rng = random.Random(42)
@@ -199,6 +213,7 @@ def generate_seed_batches(num_batches: int, batch_size: int) -> None:
         batch_file = SEEDS_DIR / f"batch_{b:03d}.jsonl"
         with open(batch_file, "w", encoding="utf-8") as f:
             for idx in range(1, batch_size + 1):
+                mode = rng.choice(INPUT_MODES)
                 n1, n2 = rng.sample(common_nouns, 2)
                 v1 = rng.choice(infinitive_verbs)
                 hints = [
@@ -206,13 +221,14 @@ def generate_seed_batches(num_batches: int, batch_size: int) -> None:
                     f"{n2[0]}={n2[1]}",
                     f"{v1[0]}={'separable_verb' if v1[1] else 'verb'}",
                 ]
+                scenario = rng.choice(OCR_SCENARIOS if mode == "ocr_explain" else CHAT_SCENARIOS)
                 seed = {
                     "id": f"b{b:03d}_{idx:03d}",
                     "cefr": rng.choice(CEFR_LEVELS),
                     "register": rng.choice(REGISTERS),
-                    "scenario": rng.choice(SCENARIOS),
+                    "scenario": scenario,
                     "trap": rng.choice(GRAMMAR_TRAPS),
-                    "mode": rng.choice(INPUT_MODES),
+                    "mode": mode,
                     "db_hints": ", ".join(hints),
                     "anchor_words": [n1[0], n2[0], v1[0]],
                 }
@@ -222,8 +238,8 @@ def generate_seed_batches(num_batches: int, batch_size: int) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--batches", type=int, default=25)
-    parser.add_argument("--batch-size", type=int, default=100)
+    parser.add_argument("--batches", type=int, default=10)
+    parser.add_argument("--batch-size", type=int, default=250)
     args = parser.parse_args()
     build_lexicon_db()
     generate_seed_batches(args.batches, args.batch_size)
