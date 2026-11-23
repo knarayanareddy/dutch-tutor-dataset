@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-Deterministic validation gate executed by Sonnet 5.5 inside Arena.ai Agent Mode.
+Local validation gate for Code Mode outputs.
 Usage:
-  python scripts/validate_batch.py seeds/batch_001.jsonl data/batch_001.jsonl
+  python scripts/validate_batch.py seeds/batch_001.jsonl data/batch_001_part1.jsonl --start 1 --end 250
 """
 
+import argparse
 import json
 import re
 import sqlite3
@@ -25,22 +26,30 @@ TOKEN_RE = re.compile(r"[a-zàáâäèéêëìíîïòóôöùúûüĳ'-]+", re.
 
 
 def main() -> int:
-    if len(sys.argv) != 3:
-        print("Usage: python scripts/validate_batch.py <seed_jsonl> <output_jsonl>")
-        return 2
+    parser = argparse.ArgumentParser()
+    parser.add_argument("seed_jsonl", type=Path)
+    parser.add_argument("output_jsonl", type=Path)
+    parser.add_argument("--start", type=int, default=1, help="1-based start row in seed file")
+    parser.add_argument("--end", type=int, default=None, help="1-based inclusive end row in seed file")
+    args = parser.parse_args()
 
-    seed_path = Path(sys.argv[1])
-    out_path = Path(sys.argv[2])
+    all_seeds = [
+        json.loads(line)
+        for line in args.seed_jsonl.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    end_idx = args.end if args.end is not None else len(all_seeds)
+    seeds = all_seeds[args.start - 1 : end_idx]
 
-    if not out_path.exists():
-        print(f"FAIL: Output file {out_path} does not exist.")
+    if not args.output_jsonl.exists():
+        print(f"FAIL: {args.output_jsonl} does not exist.")
         return 1
 
-    seeds = [json.loads(line) for line in seed_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    out_lines = [line for line in out_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-
+    out_lines = [
+        line for line in args.output_jsonl.read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
     if len(seeds) != len(out_lines):
-        print(f"FAIL: Line count mismatch — expected {len(seeds)} rows, got {len(out_lines)}.")
+        print(f"FAIL: Expected {len(seeds)} rows (seeds {args.start}..{end_idx}), got {len(out_lines)}.")
         return 1
 
     conn = sqlite3.connect(DB_PATH)
@@ -49,31 +58,38 @@ def main() -> int:
     conn.close()
 
     errors = []
-    for idx, (seed, raw_line) in enumerate(zip(seeds, out_lines), start=1):
+    failed_ids = []
+    for idx, (seed, raw_line) in enumerate(zip(seeds, out_lines), start=args.start):
+        sid = seed["id"]
         try:
             row = json.loads(raw_line)
             msgs = row["messages"]
+            assert row.get("id") == sid
             assert len(msgs) == 3
             assert msgs[0]["role"] == "system"
             assert msgs[1]["role"] == "user" and msgs[1]["content"].strip()
             assert msgs[2]["role"] == "assistant"
         except Exception as e:
-            errors.append(f"Line {idx} ({seed['id']}): invalid JSON/messages structure ({e})")
+            errors.append(f"Row {idx} ({sid}): invalid JSON/id/messages ({e})")
+            failed_ids.append(sid)
             continue
 
         expected_sys = f"Je bent een Nederlandse taalcoach. Level: {seed['cefr']}. [DB_HINTS: {seed['db_hints']}]"
         if msgs[0]["content"].strip() != expected_sys:
-            errors.append(f"Line {idx} ({seed['id']}): system prompt must equal `{expected_sys}`")
+            errors.append(f"Row {idx} ({sid}): system prompt mismatch")
+            failed_ids.append(sid)
             continue
 
         asst = msgs[2]["content"].strip()
         m = TAG_PATTERN.match(asst)
         if not m:
-            errors.append(f"Line {idx} ({seed['id']}): missing or out-of-order XML tags")
+            errors.append(f"Row {idx} ({sid}): missing or malformed XML tags")
+            failed_ids.append(sid)
             continue
 
         if len(asst.split()) > 115 or len(asst) > 720:
-            errors.append(f"Line {idx} ({seed['id']}): exceeds 115 words / 720 chars ({len(asst.split())} words)")
+            errors.append(f"Row {idx} ({sid}): too long ({len(asst.split())} words)")
+            failed_ids.append(sid)
             continue
 
         reply_nl = m.group("reply_nl").strip()
@@ -82,34 +98,38 @@ def main() -> int:
         vocab = m.group("vocab").strip()
 
         if not reply_nl or not rule_en or not vocab:
-            errors.append(f"Line {idx} ({seed['id']}): empty XML tag")
+            errors.append(f"Row {idx} ({sid}): empty tag")
+            failed_ids.append(sid)
             continue
 
         mode = seed["mode"]
         if mode == "valid_dutch" and correction.upper() != "NONE":
-            errors.append(f"Line {idx} ({seed['id']}): mode=valid_dutch requires <correction>NONE</correction>")
+            errors.append(f"Row {idx} ({sid}): valid_dutch must have NONE correction")
+            failed_ids.append(sid)
             continue
         if mode == "learner_error" and correction.upper() == "NONE":
-            errors.append(f"Line {idx} ({seed['id']}): mode=learner_error cannot have <correction>NONE</correction>")
+            errors.append(f"Row {idx} ({sid}): learner_error cannot have NONE correction")
+            failed_ids.append(sid)
             continue
 
         dutch_blocks = [reply_nl] + ([] if correction.upper() == "NONE" else [correction])
         for text in dutch_blocks:
             tokens = [t.lower() for t in TOKEN_RE.findall(text)]
             if len(tokens) < 2:
-                errors.append(f"Line {idx} ({seed['id']}): Dutch text too short")
+                errors.append(f"Row {idx} ({sid}): Dutch text too short")
+                failed_ids.append(sid)
                 break
-            known_ratio = sum(1 for t in tokens if t in valid_words) / len(tokens)
-            if known_ratio < 0.90:
+            if (sum(1 for t in tokens if t in valid_words) / len(tokens)) < 0.90:
                 unknown = [t for t in tokens if t not in valid_words]
-                errors.append(f"Line {idx} ({seed['id']}): unknown/non-Dutch words {unknown[:4]}")
+                errors.append(f"Row {idx} ({sid}): unknown Dutch words {unknown[:4]}")
+                failed_ids.append(sid)
                 break
 
             gender_err = None
             for art, noun in ARTICLE_NOUN_RE.findall(text):
                 art_l, noun_l = art.lower(), noun.lower()
                 if noun_l.endswith("je") and art_l != "het":
-                    gender_err = f"diminutive '{art_l} {noun_l}' must use 'het'"
+                    gender_err = f"diminutive '{art_l} {noun_l}' must be 'het'"
                     break
                 if noun_l in noun_articles:
                     exp = noun_articles[noun_l]
@@ -117,16 +137,18 @@ def main() -> int:
                         gender_err = f"'{art_l} {noun_l}' should be '{exp} {noun_l}'"
                         break
             if gender_err:
-                errors.append(f"Line {idx} ({seed['id']}): gender mismatch ({gender_err})")
+                errors.append(f"Row {idx} ({sid}): {gender_err}")
+                failed_ids.append(sid)
                 break
 
     if errors:
-        print(f"FAIL: {len(errors)}/{len(seeds)} rows failed validation:")
-        for err in errors[:25]:
+        print(f"FAIL: {len(errors)}/{len(seeds)} rows failed:")
+        for err in errors[:30]:
             print("  -", err)
+        print("\nFailed IDs:", ", ".join(failed_ids))
         return 1
 
-    print(f"PASS: {len(seeds)}/{len(seeds)} rows verified clean.")
+    print(f"PASS: {len(seeds)}/{len(seeds)} rows (seeds {args.start}..{end_idx}) verified clean.")
     return 0
 
 
