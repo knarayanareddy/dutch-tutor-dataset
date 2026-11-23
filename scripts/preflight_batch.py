@@ -100,7 +100,7 @@ def main() -> int:
         en = [t for t in TOKEN_RE.findall(r.lower()) if t in ENGLISH_HINTS]
         if en:
             hint += f" ENGLISH?{sorted(set(en))}"
-        anchors = [a0 for a0 in seed["anchor_words"] if re.search(rf"\b{re.escape(a0.lower())}", (msgs[1]["content"] + " " + m.group("r") + " " + m.group("v")).lower())]
+        anchors = [a0 for a0 in seed["anchor_words"] if re.search(rf"\b{re.escape(a0.lower())}", (msgs[1]["content"] + " " + m.group("r")).lower())]
         if not anchors:
             hint += " no-anchor"
         if issues:
