@@ -84,6 +84,35 @@ EVERYDAY_NOUNS = [
     "bord", "stoep", "gevel", "afval", "brief", "adres", "korting", "kassa", "balie",
 ]
 
+# Curated everyday + separable verbs so seed hints stay usable at A1/A2 level
+EVERYDAY_VERBS = [
+    # Core everyday verbs
+    "reizen", "fietsen", "lopen", "wachten", "vertrekken", "betalen", "bestellen",
+    "kopen", "verkopen", "huren", "werken", "sturen", "bellen", "vragen", "antwoorden",
+    "zoeken", "vinden", "vergeten", "onthouden", "begrijpen", "uitleggen", "helpen",
+    "maken", "repareren", "testen", "checken", "regelen", "boeken", "annuleren",
+    "eten", "drinken", "koken", "slapen", "sporten", "wandelen", "zwemmen",
+    # Common separable verbs (scheidbare werkwoorden — high value for grammar training)
+    "opbellen", "meenemen", "afspreken", "doorgeven", "uitstappen", "instappen",
+    "overstappen", "aankomen", "ophalen", "terugbrengen", "invullen", "aanvragen",
+    "afrekenen", "uitzoeken", "nakijken", "opladen", "aanzetten", "uitzetten",
+    "opruimen", "schoonmaken", "langskomen", "terugbellen", "doorsturen", "afzeggen",
+]
+
+# Wiktionary's separable tag is unreliable for these lemmas (flag often 0), so fall
+# back to the stressed-prefix test. "aanvragen" is deliberately absent: it also
+# exists as a non-separable noun-derived verb, so we trust the DB flag for it.
+SEPARABLE_PREFIXES = (
+    "op", "af", "aan", "uit", "in", "over", "na", "toe", "terug", "door",
+    "mee", "langs", "bij", "weg", "vast", "samen", "thuis",
+)
+
+
+def is_separable_verb(verb: str, db_flag: int = 0) -> bool:
+    if db_flag:
+        return True
+    return any(verb.startswith(p) and len(verb) - len(p) >= 3 for p in SEPARABLE_PREFIXES)
+
 
 def build_lexicon_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -199,27 +228,30 @@ def generate_seed_batches(num_batches: int, batch_size: int) -> None:
     noun_map = dict(
         cur.execute("SELECT lemma, article FROM nouns WHERE article IN ('de', 'het')").fetchall()
     )
-    verbs = cur.execute("SELECT lemma, separable FROM verbs").fetchall()
+    verb_map = dict(cur.execute("SELECT lemma, separable FROM verbs").fetchall())
     conn.close()
 
     common_nouns = [(w, noun_map[w]) for w in EVERYDAY_NOUNS if w in noun_map]
-    infinitive_verbs = [
-        (v, sep) for v, sep in verbs
-        if v.endswith("en") and 5 <= len(v) <= 12 and "-" not in v
-    ]
+    common_verbs = [(v, verb_map[v]) for v in EVERYDAY_VERBS if v in verb_map]
+
+    missing_nouns = [w for w in EVERYDAY_NOUNS if w not in noun_map]
+    missing_verbs = [v for v in EVERYDAY_VERBS if v not in verb_map]
+    if missing_nouns or missing_verbs:
+        print(f"WARN: not in lexicon — nouns {missing_nouns}, verbs {missing_verbs}")
 
     rng = random.Random(42)
-    for b in range(1, num_batches + 1):
+    # Start at 2 so seeds/batch_001.jsonl and data/batch_001.jsonl stay 1-to-1 aligned
+    for b in range(2, num_batches + 1):
         batch_file = SEEDS_DIR / f"batch_{b:03d}.jsonl"
         with open(batch_file, "w", encoding="utf-8") as f:
             for idx in range(1, batch_size + 1):
                 mode = rng.choice(INPUT_MODES)
                 n1, n2 = rng.sample(common_nouns, 2)
-                v1 = rng.choice(infinitive_verbs)
+                v1 = rng.choice(common_verbs)
                 hints = [
                     f"{n1[0]}={n1[1]}",
                     f"{n2[0]}={n2[1]}",
-                    f"{v1[0]}={'separable_verb' if v1[1] else 'verb'}",
+                    f"{v1[0]}={'separable_verb' if is_separable_verb(v1[0], v1[1]) else 'verb'}",
                 ]
                 scenario = rng.choice(OCR_SCENARIOS if mode == "ocr_explain" else CHAT_SCENARIOS)
                 seed = {
@@ -233,7 +265,8 @@ def generate_seed_batches(num_batches: int, batch_size: int) -> None:
                     "anchor_words": [n1[0], n2[0], v1[0]],
                 }
                 f.write(json.dumps(seed, ensure_ascii=False) + "\n")
-    print(f"Wrote {num_batches} seed batches ({num_batches * batch_size} seeds) to {SEEDS_DIR}/.")
+    print(f"Wrote seed batches 002..{num_batches:03d} ({batch_size} seeds each) to {SEEDS_DIR}/; "
+          f"batch_001 left untouched.")
 
 
 if __name__ == "__main__":

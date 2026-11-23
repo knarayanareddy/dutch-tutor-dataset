@@ -8,7 +8,9 @@ Repository for generating, gating, and validating Dutch tutor synthetic datasets
 dutch-tutor-dataset/
 ├── scripts/
 │   ├── prepare_repo.py      # Run ONCE locally to build the DB + seed batches
-│   └── validate_batch.py    # Run by Sonnet 5.5 in Arena.ai to gate output
+│   ├── validate_batch.py    # Run by Sonnet 5.5 in Arena.ai to gate output
+│   ├── preflight_batch.py   # Verbose, read-only diagnostics before/after a gate run
+│   └── assemble_batch.py    # Wraps hand-authored rows into the exact training schema
 ├── assets/
 │   └── dutch_lexicon.db     # OpenTaal + Wiktionary SQLite DB (reused in your Android APK)
 ├── seeds/
@@ -50,3 +52,25 @@ Validation includes:
   - `ocr_explain`: user prompt must begin with `[OCR_TEXT]` and `<correction>` holds the English translation
 - Lexicon compliance (≥ 90% Dutch vocabulary in OpenTaal/Wiktionary) and `de`/`het`/diminutive article agreement
 - Compact output of failed IDs for targeted repair prompts
+
+## Authoring Workflow (draft → assemble → gate)
+
+Dutch content is written by hand (never string templates) and only the mechanical
+fields are generated, so `preflight_batch.py` can be run before the official gate:
+
+```bash
+# 1. Assemble a batch from hand-authored user/reply/correction/rule/vocab fields
+python scripts/assemble_batch.py seeds/batch_001.jsonl draft_slice.jsonl data/batch_001.jsonl --append
+
+# 2. Read-only diagnostics: per-row failures plus English-leak and anchor-word hints
+python scripts/preflight_batch.py seeds/batch_001.jsonl data/batch_001.jsonl --start 1 --end 250
+
+# 3. Official gate
+python scripts/validate_batch.py seeds/batch_001.jsonl data/batch_001.jsonl --start 1 --end 250
+```
+
+`preflight_batch.py` adds hints the gate does not print: rows missing every
+`anchor_words` entry, possible English tokens leaking into `<reply_nl>`, and
+per-row word/character budget. It also reports article conflicts with the full
+noun context, which helps separate real errors from false positives such as
+`het regent` (verb + pronoun) or `het afval` (the DB stores `afval` as `de`).
