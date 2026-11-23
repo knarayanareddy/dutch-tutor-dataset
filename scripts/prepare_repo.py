@@ -111,10 +111,15 @@ def build_lexicon_db() -> None:
                 if f and " " not in f:
                     words.add(f)
 
+            tags = set(entry.get("tags", []))
+            for sense in entry.get("senses", []):
+                tags.update(sense.get("tags", []))
+
+            # Skip inflected forms (participles, plurals, past tenses) when registering lemmas
+            if "form-of" in tags or "alt-of" in tags:
+                continue
+
             if pos == "noun":
-                tags = set(entry.get("tags", []))
-                for sense in entry.get("senses", []):
-                    tags.update(sense.get("tags", []))
                 is_neuter = "neuter" in tags
                 is_common = bool(tags & {"common", "masculine", "feminine"})
                 for ht in entry.get("head_templates", []):
@@ -165,21 +170,37 @@ def generate_seed_batches(num_batches: int, batch_size: int) -> None:
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     nouns = cur.execute(
-        "SELECT lemma, article FROM nouns WHERE length(lemma) BETWEEN 4 AND 12 "
-        "AND article IN ('de', 'het')"
+        "SELECT lemma, article FROM nouns WHERE article IN ('de', 'het')"
     ).fetchall()
     verbs = cur.execute(
         "SELECT lemma, separable FROM verbs WHERE length(lemma) BETWEEN 5 AND 13"
     ).fetchall()
     conn.close()
 
+    # Curated high-frequency everyday Dutch nouns (verified against SQLite de/het)
+    EVERYDAY_NOUNS = [
+        "trein", "fiets", "station", "kaartje", "perron", "vertraging", "bus", "auto",
+        "huis", "kamer", "keuken", "raam", "deur", "sleutel", "tafel", "stoel", "bed",
+        "werk", "kantoor", "vergadering", "verslag", "afspraak", "collega", "baan",
+        "winkel", "bon", "tas", "brood", "koffie", "water", "bier", "rekening", "prijs",
+        "arts", "ziekenhuis", "recept", "pijn", "hoofd", "keel", "medicijn",
+        "weer", "regen", "wind", "zon", "paraplu", "jas", "schoen", "weekend", "vakantie",
+        "bericht", "telefoon", "oplader", "scherm", "batterij", "gemeente", "formulier",
+    ]
+    noun_map = dict(nouns)
+    common_nouns = [(w, noun_map[w]) for w in EVERYDAY_NOUNS if w in noun_map]
+    infinitive_verbs = [
+        (v, sep) for v, sep in verbs
+        if v.endswith("en") and 5 <= len(v) <= 11
+    ]
+
     rng = random.Random(42)
     for b in range(1, num_batches + 1):
         batch_file = SEEDS_DIR / f"batch_{b:03d}.jsonl"
         with open(batch_file, "w", encoding="utf-8") as f:
             for idx in range(1, batch_size + 1):
-                n1, n2 = rng.sample(nouns, 2)
-                v1 = rng.choice(verbs)
+                n1, n2 = rng.sample(common_nouns, 2)
+                v1 = rng.choice(infinitive_verbs)
                 hints = [
                     f"{n1[0]}={n1[1]}",
                     f"{n2[0]}={n2[1]}",
