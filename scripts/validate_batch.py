@@ -24,6 +24,19 @@ TAG_PATTERN = re.compile(
 ARTICLE_NOUN_RE = re.compile(r"\b(de|het)\s+([a-zàáâäèéêëìíîïòóôöùúûüĳ'-]{3,})\b", re.IGNORECASE)
 TOKEN_RE = re.compile(r"[a-zàáâäèéêëìíîïòóôöùúûüĳ'-]+", re.IGNORECASE)
 
+# Words that follow the pronoun 'het' and happen to be homographs of 'de' nouns in
+# Wiktionary (e.g. 'het regent' is pronoun + verb, not article + noun 'regent').
+# The gender check is skipped for these so correct Dutch is not rejected.
+HET_PRONOUN_FOLLOWERS = {
+    "een", "bij", "was", "regent", "kan", "mag", "moet", "wordt", "gaat", "komt",
+    "staat", "ligt", "zit", "lijkt", "blijkt", "klopt", "lukt", "duurt", "kost",
+    "scheelt", "valt", "loopt", "rijdt", "werkt", "helpt", "stopt", "begint",
+    "hangt", "past", "hoort", "voelt", "smaakt", "klinkt", "betekent", "gebeurt",
+    "is", "zijn", "waren", "heeft", "had", "zal", "zou", "wil", "wilde", "niet",
+    "wel", "al", "nog", "ook", "echt", "heel", "erg", "te", "er", "hier", "daar",
+    "nu", "straks", "morgen", "gisteren", "vandaag",
+}
+
 
 def main() -> int:
     parser = argparse.ArgumentParser()
@@ -143,6 +156,8 @@ def main() -> int:
             gender_err = None
             for art, noun in ARTICLE_NOUN_RE.findall(text):
                 art_l, noun_l = art.lower(), noun.lower()
+                if art_l == "het" and noun_l in HET_PRONOUN_FOLLOWERS:
+                    continue
                 if noun_l.endswith("je") and art_l != "het":
                     gender_err = f"diminutive '{art_l} {noun_l}' must be 'het'"
                     break
