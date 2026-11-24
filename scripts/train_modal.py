@@ -198,6 +198,7 @@ def run_fine_tuning(
         trust_remote_code=True,
     )
     model = prepare_model_for_kbit_training(model)
+    model.enable_input_require_grads()
 
     # 4. LoRA Adapter Setup
     peft_config = LoraConfig(
@@ -209,6 +210,9 @@ def run_fine_tuning(
         task_type="CAUSAL_LM",
     )
     model = get_peft_model(model, peft_config)
+    for name, param in model.named_parameters():
+        if "lora" in name:
+            param.requires_grad = True
     model.print_trainable_parameters()
 
     # 5. Data Collator for Response-Only Masking
@@ -248,7 +252,6 @@ def run_fine_tuning(
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
         data_collator=collator,
-        peft_config=peft_config,
         args=sft_config,
     )
 
