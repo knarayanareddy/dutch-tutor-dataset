@@ -156,8 +156,10 @@ def run_fine_tuning(
 
     # 2. Tokenizer & Chat Template Formatting
     print("Loading tokenizer...")
+    hf_token = os.environ.get("HF_TOKEN")
     tokenizer = AutoTokenizer.from_pretrained(
         base_model_id,
+        token=hf_token,
         trust_remote_code=True,
     )
     if tokenizer.pad_token is None:
@@ -192,6 +194,7 @@ def run_fine_tuning(
     print("Loading base model in 4-bit NF4...")
     model = AutoModelForCausalLM.from_pretrained(
         base_model_id,
+        token=hf_token,
         quantization_config=bnb_config,
         device_map="auto",
         torch_dtype=torch.bfloat16,
@@ -301,6 +304,7 @@ def run_fine_tuning(
 
         base_merge = AutoModelForCausalLM.from_pretrained(
             base_model_id,
+            token=hf_token,
             torch_dtype=torch.bfloat16,
             device_map="auto",
             trust_remote_code=True,
