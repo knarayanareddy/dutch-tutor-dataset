@@ -38,9 +38,9 @@ if modal is not None:
         modal.Image.debian_slim(python_version="3.11")
         .pip_install(
             "torch>=2.4.0",
-            "transformers>=4.48.0",
+            "transformers>=4.48.0,<4.50.0",
             "peft>=0.14.0",
-            "trl>=0.14.0",
+            "trl>=0.14.0,<0.16.0",
             "bitsandbytes>=0.45.0",
             "accelerate>=1.2.0",
             "datasets>=3.2.0",
