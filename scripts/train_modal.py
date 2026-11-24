@@ -102,9 +102,8 @@ def run_fine_tuning(
         AutoModelForCausalLM,
         AutoTokenizer,
         BitsAndBytesConfig,
-        TrainingArguments,
     )
-    from trl import SFTTrainer, DataCollatorForCompletionOnlyLM
+    from trl import SFTConfig, SFTTrainer, DataCollatorForCompletionOnlyLM
 
     model_key = model_name.lower()
     if model_key in MODEL_CONFIGS:
@@ -229,7 +228,7 @@ def run_fine_tuning(
     total_steps = (len(train_data) // (per_device_batch_size * gradient_accumulation_steps)) * epochs
     warmup_steps = max(10, int(total_steps * 0.08))
 
-    training_args = TrainingArguments(
+    sft_config = SFTConfig(
         output_dir=output_dir,
         num_train_epochs=epochs,
         per_device_train_batch_size=per_device_batch_size,
@@ -250,6 +249,8 @@ def run_fine_tuning(
         metric_for_best_model="eval_loss",
         greater_is_better=False,
         report_to="none",
+        max_seq_length=512,
+        dataset_text_field="text",
     )
 
     trainer = SFTTrainer(
@@ -257,9 +258,7 @@ def run_fine_tuning(
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
         data_collator=collator,
-        max_seq_length=512,
-        dataset_text_field="text",
-        args=training_args,
+        args=sft_config,
     )
 
     print("Starting training...")
