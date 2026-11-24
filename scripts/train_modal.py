@@ -226,6 +226,9 @@ def run_fine_tuning(
     )
 
     # 6. SFT Trainer Setup
+    total_steps = (len(train_data) // (per_device_batch_size * gradient_accumulation_steps)) * epochs
+    warmup_steps = max(10, int(total_steps * 0.08))
+
     training_args = TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=epochs,
@@ -233,7 +236,7 @@ def run_fine_tuning(
         gradient_accumulation_steps=gradient_accumulation_steps,
         learning_rate=learning_rate,
         lr_scheduler_type="cosine",
-        warmup_ratio=0.08,
+        warmup_steps=warmup_steps,
         weight_decay=0.01,
         optim="paged_adamw_8bit",
         bf16=True,
