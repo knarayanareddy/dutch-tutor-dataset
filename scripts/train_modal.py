@@ -325,11 +325,15 @@ def run_fine_tuning(
 # Modal Function Entrypoint
 # -------------------------------------------------------------------------
 if app is not None:
+    hf_secrets = []
+    if os.environ.get("HF_TOKEN"):
+        hf_secrets.append(modal.Secret.from_dict({"HF_TOKEN": os.environ["HF_TOKEN"]}))
+
     @app.function(
         image=train_image,
         gpu="A10G",
         volumes={"/models": models_volume},
-        secrets=[modal.Secret.from_name("huggingface-secret", required=False)],
+        secrets=hf_secrets,
         timeout=3600,
     )
     def train_modal_entrypoint(
